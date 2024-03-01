@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use bevy::{
     asset::{io::Reader, load_internal_asset, AssetLoader, AsyncReadExt, LoadContext},
@@ -7,19 +7,22 @@ use bevy::{
         core_3d::{Transparent3d, CORE_3D_DEPTH_FORMAT},
         prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass, NormalPrepass},
     },
-    ecs::system::lifetimeless::SRes,
+    ecs::system::{lifetimeless::SRes, SystemParam},
     pbr::{MeshPipeline, MeshPipelineKey, SetMeshViewBindGroup},
     prelude::*,
     render::{
+        render_asset::{
+            PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages, RenderAssets,
+        },
         render_phase::{
             AddRenderCommand, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
             RenderPhase, SetItemPipeline,
         },
         render_resource::{
-            binding_types::uniform_buffer, BindGroup, BindGroupEntries, BindGroupLayout,
-            BindGroupLayoutEntries, BufferVec, FragmentState, PipelineCache,
-            RenderPipelineDescriptor, SpecializedRenderPipeline, SpecializedRenderPipelines,
-            VertexBufferLayout, VertexState,
+            binding_types::{sampler, storage_buffer_read_only_sized, texture_2d, uniform_buffer},
+            BindGroup, BindGroupEntries, BindGroupLayout, BindGroupLayoutEntries, BufferVec,
+            FragmentState, PipelineCache, RenderPipelineDescriptor, SpecializedRenderPipeline,
+            SpecializedRenderPipelines, Texture, VertexBufferLayout, VertexState,
         },
         renderer::{RenderDevice, RenderQueue},
         texture::BevyDefault,
@@ -32,8 +35,10 @@ use font_mud::{error::FontError, glyph_atlas::GlyphAtlas};
 use owned_ttf_parser::{AsFaceRef, OwnedFace};
 use thiserror::Error;
 use wgpu::{
-    BlendState, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
-    MultisampleState, PrimitiveState, ShaderStages, TextureFormat, VertexAttribute, VertexFormat,
+    util::TextureDataOrder, BlendState, BufferUsages, ColorTargetState, ColorWrites,
+    CompareFunction, DepthStencilState, Extent3d, MultisampleState, PrimitiveState,
+    SamplerBindingType, ShaderStages, TextureDescriptor, TextureDimension, TextureFormat,
+    TextureSampleType, TextureUsages, VertexAttribute, VertexFormat,
 };
 
 /// Possible errors that can be produced by [MsdfAtlasLoader]
@@ -78,15 +83,112 @@ impl AssetLoader for MsdfAtlasLoader {
             // TODO support non-zero face indices
             let face = OwnedFace::from_vec(bytes, 0)?;
             let (atlas, _glyph_errors) = GlyphAtlas::new(face.as_face_ref())?;
-            Ok(MsdfAtlas { face, atlas })
+
+            Ok(MsdfAtlas {
+                face: Arc::new(face),
+                atlas: Arc::new(atlas),
+            })
         })
     }
 }
 
-#[derive(Asset, TypePath)]
+#[derive(Asset, Clone, TypePath)]
 pub struct MsdfAtlas {
-    pub face: OwnedFace,
-    pub atlas: GlyphAtlas,
+    pub face: Arc<OwnedFace>,
+    pub atlas: Arc<GlyphAtlas>,
+}
+
+/// The prepared [MsdfAtlas] for rendering.
+#[derive(Asset, TypePath)]
+pub struct GpuMsdfAtlas {
+    pub texture: Texture,
+    pub bind_group: BindGroup,
+}
+
+impl RenderAsset for MsdfAtlas {
+    type PreparedAsset = GpuMsdfAtlas;
+    type Param = (SRes<RenderDevice>, SRes<RenderQueue>, SRes<MsdfPipeline>);
+
+    fn asset_usage(&self) -> RenderAssetUsages {
+        RenderAssetUsages::RENDER_WORLD
+    }
+
+    fn prepare_asset(
+        self,
+        (device, queue, pipeline): &mut <Self::Param as SystemParam>::Item<'_, '_>,
+    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
+        let format = TextureFormat::Rgba8Unorm;
+
+        let texture_data: Vec<u8> = std::iter::repeat([0xff, 0x00, 0xff, 0xff])
+            .take((self.atlas.width * self.atlas.height) as usize)
+            .flatten()
+            .collect();
+
+        /*let full_atlas = self.atlas.generate_full();
+        let texture_data: &[u8] = bytemuck::cast_slice(&full_atlas.data);*/
+
+        let texture = device.create_texture_with_data(
+            queue,
+            &TextureDescriptor {
+                label: Some("msdf atlas"),
+                size: Extent3d {
+                    width: self.atlas.width,
+                    height: self.atlas.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format,
+                usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[format],
+            },
+            TextureDataOrder::LayerMajor,
+            &texture_data,
+        );
+
+        let texture_view = texture.create_view(&Default::default());
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("msdf atlas sampler"),
+            ..Default::default()
+        });
+
+        let glyph_data: Vec<_> = self
+            .atlas
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                glyph.as_ref().map(|info| GpuMsdfGlyphSource {
+                    positions: info.vertices.map(|v| v.position.to_array().into()),
+                    tex_coords: info.vertices.map(|v| v.tex_coords.to_array().into()),
+                })
+            })
+            .map(|glyph| {
+                glyph.unwrap_or(GpuMsdfGlyphSource {
+                    positions: [Vec2::ZERO; 4],
+                    tex_coords: [Vec2::ZERO; 4],
+                })
+            })
+            .collect();
+
+        let glyphs = device.create_buffer_with_data(&wgpu::util::BufferInitDescriptor {
+            label: Some("msdf atlas glyphs"),
+            contents: bytemuck::cast_slice(&glyph_data),
+            usage: BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        });
+
+        let bind_group = device.create_bind_group(
+            "msdf atlas bind group",
+            &pipeline.atlas_bgl,
+            &BindGroupEntries::sequential((&texture_view, &sampler, glyphs.as_entire_binding())),
+        );
+
+        Ok(GpuMsdfAtlas {
+            texture,
+            bind_group,
+        })
+    }
 }
 
 /// A bundle of the components necessary to draw a plane of MSDF glyphs.
@@ -129,7 +231,8 @@ impl Plugin for MsdfPlugin {
         load_internal_asset!(app, SHADER_HANDLE, "msdf.wgsl", Shader::from_wgsl);
 
         app.init_asset::<MsdfAtlas>()
-            .init_asset_loader::<MsdfAtlasLoader>();
+            .init_asset_loader::<MsdfAtlasLoader>()
+            .add_plugins(RenderAssetPlugin::<MsdfAtlas>::default());
 
         let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -168,8 +271,16 @@ pub struct GpuMsdfGlyph {
     pub index: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct GpuMsdfGlyphSource {
+    pub positions: [Vec2; 4],
+    pub tex_coords: [Vec2; 4],
+}
+
 #[derive(Component)]
 pub struct RenderMsdfDraw {
+    pub atlas: AssetId<MsdfAtlas>,
     pub vertices: Range<u32>,
     pub transform: usize,
 }
@@ -203,6 +314,7 @@ pub struct MsdfPipelineKey {
 pub struct MsdfPipeline {
     pub mesh_pipeline: MeshPipeline,
     pub transforms_bgl: BindGroupLayout,
+    pub atlas_bgl: BindGroupLayout,
 }
 
 impl FromWorld for MsdfPipeline {
@@ -214,9 +326,22 @@ impl FromWorld for MsdfPipeline {
             &BindGroupLayoutEntries::single(ShaderStages::VERTEX, uniform_buffer::<Mat4>(true)),
         );
 
+        let atlas_bgl = render_device.create_bind_group_layout(
+            Some("msdf_atlas_bind_group_layout"),
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                (
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    storage_buffer_read_only_sized(false, None),
+                ),
+            ),
+        );
+
         Self {
             mesh_pipeline: world.resource::<MeshPipeline>().clone(),
             transforms_bgl,
+            atlas_bgl,
         }
     }
 }
@@ -236,7 +361,11 @@ impl SpecializedRenderPipeline for MsdfPipeline {
             TextureFormat::bevy_default()
         };
 
-        let layout = vec![view_layout, self.transforms_bgl.clone()];
+        let layout = vec![
+            view_layout,
+            self.transforms_bgl.clone(),
+            self.atlas_bgl.clone(),
+        ];
 
         let vertex_layout = VertexBufferLayout {
             array_stride: std::mem::size_of::<GpuMsdfGlyph>() as u64,
@@ -270,7 +399,10 @@ impl SpecializedRenderPipeline for MsdfPipeline {
                 shader_defs: vec![],
                 buffers: vec![vertex_layout],
             },
-            primitive: PrimitiveState::default(),
+            primitive: PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..default()
+            },
             depth_stencil: Some(DepthStencilState {
                 format: CORE_3D_DEPTH_FORMAT,
                 depth_write_enabled: true,
@@ -300,7 +432,12 @@ impl SpecializedRenderPipeline for MsdfPipeline {
 pub struct DrawMsdf;
 
 impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
-    type Param = (SRes<MsdfBuffers>, SRes<MsdfBindGroups>);
+    type Param = (
+        SRes<MsdfBuffers>,
+        SRes<MsdfBindGroups>,
+        SRes<RenderAssets<MsdfAtlas>>,
+    );
+
     type ViewQuery = ();
     type ItemQuery = &'static RenderMsdfDraw;
 
@@ -308,10 +445,14 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
         _item: &P,
         _view: bevy::ecs::query::ROQueryItem<'w, Self::ViewQuery>,
         entity: Option<bevy::ecs::query::ROQueryItem<'w, Self::ItemQuery>>,
-        (buffers, bind_groups): bevy::ecs::system::SystemParamItem<'w, '_, Self::Param>,
+        (buffers, bind_groups, atlases): bevy::ecs::system::SystemParamItem<'w, '_, Self::Param>,
         pass: &mut bevy::render::render_phase::TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let Some(draw) = entity else {
+            return RenderCommandResult::Failure;
+        };
+
+        let Some(atlas) = atlases.into_inner().get(draw.atlas) else {
             return RenderCommandResult::Failure;
         };
 
@@ -325,9 +466,10 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
 
         let transform_offset = (draw.transform * std::mem::size_of::<Mat4>()) as u32;
 
-        pass.set_bind_group(1, transforms, &[transform_offset]);
         pass.set_vertex_buffer(0, instances.slice(..));
-        pass.draw(0..6, draw.vertices.clone());
+        pass.set_bind_group(1, transforms, &[transform_offset]);
+        pass.set_bind_group(2, &atlas.bind_group, &[]);
+        pass.draw(0..4, draw.vertices.clone());
 
         RenderCommandResult::Success
     }
@@ -427,6 +569,7 @@ pub fn extract_msdfs(
         let end = out_msdfs.glyphs.len() as u32;
 
         commands.spawn(RenderMsdfDraw {
+            atlas: msdf.atlas.id(),
             vertices: start..end,
             transform,
         });

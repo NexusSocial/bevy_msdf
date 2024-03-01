@@ -3,6 +3,9 @@
 
 @group(0) @binding(0) var<uniform> view: View;
 @group(1) @binding(0) var<uniform> transform: mat4x4<f32>;
+@group(2) @binding(0) var atlas_texture: texture_2d<f32>;
+@group(2) @binding(1) var atlas_sampler: sampler;
+@group(2) @binding(2) var<storage> atlas_glyphs: array<vec2<f32>>;
 
 struct VertexInput {
     @builtin(vertex_index) idx: u32,
@@ -14,33 +17,24 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
 };
 
 @vertex
 fn vertex(vertex: VertexInput) -> VertexOutput {
-    var corners = array<vec2<f32>, 6>(
-        vec2(-0.5, 0.),
-        vec2(-0.5, 1.),
-        vec2(0.5, 1.),
-        vec2(-0.5, 0.),
-        vec2(0.5, 1.),
-        vec2(0.5, 0.),
-    );
-
-    let corner = corners[vertex.idx] * 0.1;
+    let glyph_base = vertex.glyph * 8;
+    let corner = atlas_glyphs[glyph_base + vertex.idx];
+    let uv = atlas_glyphs[glyph_base + vertex.idx + 4];
     let position = view.view_proj * transform * vec4(corner + vertex.position, 0., 1.);
-    return VertexOutput(position, vertex.color);
+    return VertexOutput(position, vertex.color, uv);
 }
-
-struct FragmentInput {
-    @location(0) color: vec4<f32>,
-};
 
 struct FragmentOutput {
     @location(0) color: vec4<f32>,
 };
 
 @fragment
-fn fragment(in: FragmentInput) -> FragmentOutput {
-    return FragmentOutput(in.color);
+fn fragment(in: VertexOutput) -> FragmentOutput {
+    let tex = textureSample(atlas_texture, atlas_sampler, in.uv);
+    return FragmentOutput(in.color * tex);
 }
