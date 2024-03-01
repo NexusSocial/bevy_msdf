@@ -29,9 +29,10 @@ use bevy::{
         view::{ExtractedView, RenderLayers, ViewTarget},
         Extract, Render, RenderApp, RenderSet,
     },
-    utils::BoxedFuture,
+    tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
+    utils::{BoxedFuture, HashMap, HashSet},
 };
-use font_mud::{error::FontError, glyph_atlas::GlyphAtlas};
+use font_mud::{error::FontError, glyph_atlas::GlyphAtlas, glyph_bitmap::GlyphBitmap};
 use owned_ttf_parser::{AsFaceRef, OwnedFace};
 use thiserror::Error;
 use wgpu::{
@@ -101,7 +102,9 @@ pub struct MsdfAtlas {
 /// The prepared [MsdfAtlas] for rendering.
 #[derive(Asset, TypePath)]
 pub struct GpuMsdfAtlas {
+    pub atlas: Arc<GlyphAtlas>,
     pub texture: Texture,
+    pub has_glyphs: HashSet<u16>,
     pub bind_group: BindGroup,
 }
 
@@ -119,13 +122,7 @@ impl RenderAsset for MsdfAtlas {
     ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
         let format = TextureFormat::Rgba8Unorm;
 
-        let texture_data: Vec<u8> = std::iter::repeat([0xff, 0x00, 0xff, 0xff])
-            .take((self.atlas.width * self.atlas.height) as usize)
-            .flatten()
-            .collect();
-
-        /*let full_atlas = self.atlas.generate_full();
-        let texture_data: &[u8] = bytemuck::cast_slice(&full_atlas.data);*/
+        let texture_data = vec![0; (self.atlas.width * self.atlas.height) as usize * 4];
 
         let texture = device.create_texture_with_data(
             queue,
@@ -187,7 +184,9 @@ impl RenderAsset for MsdfAtlas {
         );
 
         Ok(GpuMsdfAtlas {
+            atlas: self.atlas.to_owned(),
             texture,
+            has_glyphs: HashSet::new(),
             bind_group,
         })
     }
@@ -248,6 +247,7 @@ impl Plugin for MsdfPlugin {
             .add_systems(
                 Render,
                 (
+                    flush_atlas_writes.in_set(RenderSet::Prepare),
                     prepare_msdf_resources.in_set(RenderSet::PrepareResources),
                     prepare_msdf_bind_groups.in_set(RenderSet::PrepareBindGroups),
                     queue_msdf_draws.in_set(RenderSet::Queue),
@@ -287,10 +287,18 @@ pub struct RenderMsdfDraw {
     pub transform: usize,
 }
 
+pub struct MsdfAtlasWrite {
+    pub atlas: AssetId<MsdfAtlas>,
+    pub position: UVec2,
+    pub size: UVec2,
+    pub task: Task<GlyphBitmap>,
+}
+
 #[derive(Resource)]
 pub struct MsdfBuffers {
     pub glyphs: BufferVec<GpuMsdfGlyph>,
     pub transforms: BufferVec<Mat4>,
+    pub pending_writes: Vec<MsdfAtlasWrite>,
 }
 
 impl Default for MsdfBuffers {
@@ -298,6 +306,7 @@ impl Default for MsdfBuffers {
         Self {
             glyphs: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::VERTEX),
             transforms: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::UNIFORM),
+            pending_writes: vec![],
         }
     }
 }
@@ -551,9 +560,12 @@ pub fn extract_msdfs(
     mut commands: Commands,
     in_msdfs: Extract<Query<(&MsdfDraw, &GlobalTransform)>>,
     mut out_msdfs: ResMut<MsdfBuffers>,
+    mut atlases: ResMut<RenderAssets<MsdfAtlas>>,
 ) {
     out_msdfs.glyphs.clear();
     out_msdfs.transforms.clear();
+
+    let mut used_glyphs: HashMap<AssetId<MsdfAtlas>, HashSet<u16>> = HashMap::new();
 
     for (msdf, transform) in in_msdfs.iter() {
         let transform = out_msdfs.transforms.push(transform.compute_matrix());
@@ -575,7 +587,94 @@ pub fn extract_msdfs(
             vertices: start..end,
             transform,
         });
+
+        used_glyphs
+            .entry(msdf.atlas.id())
+            .or_default()
+            .extend(msdf.glyphs.iter().map(|glyph| glyph.index));
     }
+
+    let thread_pool = AsyncComputeTaskPool::get();
+
+    for (atlas_id, used_glyphs) in used_glyphs {
+        let Some(atlas) = atlases.get_mut(atlas_id) else {
+            continue;
+        };
+
+        for glyph in used_glyphs {
+            if !atlas.has_glyphs.insert(glyph) {
+                // atlas already has this glyph; skip write queuing
+                continue;
+            }
+
+            let Some(Some(info)) = atlas.atlas.glyphs.get(glyph as usize) else {
+                // atlas does not contain glyph; skip write queuing
+                continue;
+            };
+
+            let task = thread_pool.spawn({
+                // TODO derive Clone on GlyphShape upstream
+                let atlas = atlas.atlas.clone();
+                async move {
+                    let info = atlas.glyphs.get(glyph as usize).unwrap().as_ref().unwrap();
+                    info.shape.generate()
+                }
+            });
+
+            // queue up the atlas write
+            out_msdfs.pending_writes.push(MsdfAtlasWrite {
+                atlas: atlas_id,
+                position: info.position.to_array().into(),
+                size: info.size.to_array().into(),
+                task,
+            });
+        }
+    }
+}
+
+pub fn flush_atlas_writes(
+    queue: Res<RenderQueue>,
+    atlases: ResMut<RenderAssets<MsdfAtlas>>,
+    mut bufs: ResMut<MsdfBuffers>,
+) {
+    bufs.pending_writes.retain_mut(|write| {
+        let Some(bitmap) = block_on(future::poll_once(&mut write.task)) else {
+            // not done; wait until next frame.
+            return true;
+        };
+
+        let Some(atlas) = atlases.get(write.atlas) else {
+            // asset has been freed; throw away results
+            return false;
+        };
+
+        // queue up the uploading of the glyph data
+        queue.0.write_texture(
+            wgpu::ImageCopyTextureBase {
+                texture: &atlas.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: write.position.x,
+                    y: write.position.y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bitmap.data_bytes(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(bitmap.width * 4),
+                rows_per_image: Some(bitmap.height),
+            },
+            Extent3d {
+                width: write.size.x,
+                height: write.size.y,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        false
+    });
 }
 
 pub fn prepare_msdf_resources(
