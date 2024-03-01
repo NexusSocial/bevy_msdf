@@ -2,6 +2,7 @@
 #import bevy_render::view::View
 
 @group(0) @binding(0) var<uniform> view: View;
+@group(1) @binding(0) var<uniform> transform: mat4x4<f32>;
 
 struct VertexInput {
     @builtin(vertex_index) idx: u32,
@@ -27,7 +28,7 @@ fn vertex(vertex: VertexInput) -> VertexOutput {
     );
 
     let corner = corners[vertex.idx] * 0.1;
-    let position = view.view_proj * vec4(corner + vertex.position, 0., 1.);
+    let position = view.view_proj * transform * vec4(corner + vertex.position, 0., 1.);
     return VertexOutput(position, vertex.color);
 }
 

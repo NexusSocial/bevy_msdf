@@ -17,7 +17,11 @@ fn setup(mut commands: Commands, assets: ResMut<AssetServer>) {
 
     // msdf glyphs
     let glyphs = vec![];
-    commands.spawn(MsdfDraw { atlas, glyphs });
+    commands.spawn(MsdfBundle {
+        draw: MsdfDraw { atlas, glyphs },
+        transform: Transform::from_rotation(Quat::from_rotation_z(1.0)),
+        global_transform: Default::default(),
+    });
 
     // camera
     commands.spawn(Camera3dBundle {

@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use bevy::{
     asset::{io::Reader, load_internal_asset, AssetLoader, AsyncReadExt, LoadContext},
     core::{Pod, Zeroable},
@@ -14,8 +16,10 @@ use bevy::{
             RenderPhase, SetItemPipeline,
         },
         render_resource::{
-            BufferVec, FragmentState, PipelineCache, RenderPipelineDescriptor,
-            SpecializedRenderPipeline, SpecializedRenderPipelines, VertexBufferLayout, VertexState,
+            binding_types::uniform_buffer, BindGroup, BindGroupEntries, BindGroupLayout,
+            BindGroupLayoutEntries, BufferVec, FragmentState, PipelineCache,
+            RenderPipelineDescriptor, SpecializedRenderPipeline, SpecializedRenderPipelines,
+            VertexBufferLayout, VertexState,
         },
         renderer::{RenderDevice, RenderQueue},
         texture::BevyDefault,
@@ -28,7 +32,7 @@ use owned_ttf_parser::OwnedFace;
 use thiserror::Error;
 use wgpu::{
     BlendState, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
-    MultisampleState, PrimitiveState, TextureFormat, VertexAttribute, VertexFormat,
+    MultisampleState, PrimitiveState, ShaderStages, TextureFormat, VertexAttribute, VertexFormat,
 };
 
 /// Possible errors that can be produced by [MsdfAtlasLoader]
@@ -70,6 +74,14 @@ impl AssetLoader for MsdfAtlasLoader {
 #[derive(Asset, TypePath)]
 pub struct MsdfAtlas {
     pub face: OwnedFace,
+}
+
+/// A bundle of the components necessary to draw a plane of MSDF glyphs.
+#[derive(Bundle)]
+pub struct MsdfBundle {
+    pub draw: MsdfDraw,
+    pub transform: Transform,
+    pub global_transform: GlobalTransform,
 }
 
 /// A component that draws a list of glyphs onto a plane.
@@ -114,10 +126,12 @@ impl Plugin for MsdfPlugin {
             .add_render_command::<Transparent3d, MsdfCommands>()
             .init_resource::<SpecializedRenderPipelines<MsdfPipeline>>()
             .init_resource::<MsdfBuffers>()
+            .init_resource::<MsdfBindGroups>()
             .add_systems(
                 Render,
                 (
-                    prepare_msdfs.in_set(RenderSet::PrepareResources),
+                    prepare_msdf_resources.in_set(RenderSet::PrepareResources),
+                    prepare_msdf_bind_groups.in_set(RenderSet::PrepareBindGroups),
                     queue_msdf_draws.in_set(RenderSet::Queue),
                 ),
             )
@@ -141,19 +155,30 @@ pub struct GpuMsdfGlyph {
     pub index: u32,
 }
 
+#[derive(Component)]
+pub struct RenderMsdfDraw {
+    pub vertices: Range<u32>,
+    pub transform: usize,
+}
+
 #[derive(Resource)]
 pub struct MsdfBuffers {
     pub glyphs: BufferVec<GpuMsdfGlyph>,
+    pub transforms: BufferVec<Mat4>,
 }
 
 impl Default for MsdfBuffers {
     fn default() -> Self {
         Self {
-            glyphs: BufferVec::new(
-                BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::VERTEX,
-            ),
+            glyphs: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::VERTEX),
+            transforms: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::UNIFORM),
         }
     }
+}
+
+#[derive(Default, Resource)]
+pub struct MsdfBindGroups {
+    pub transforms: Option<BindGroup>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -163,13 +188,22 @@ pub struct MsdfPipelineKey {
 
 #[derive(Resource)]
 pub struct MsdfPipeline {
-    mesh_pipeline: MeshPipeline,
+    pub mesh_pipeline: MeshPipeline,
+    pub transforms_bgl: BindGroupLayout,
 }
 
 impl FromWorld for MsdfPipeline {
     fn from_world(world: &mut World) -> Self {
+        let render_device = world.resource::<RenderDevice>();
+
+        let transforms_bgl = render_device.create_bind_group_layout(
+            Some("msdf_transforms_bind_group_layout"),
+            &BindGroupLayoutEntries::single(ShaderStages::VERTEX, uniform_buffer::<Mat4>(true)),
+        );
+
         Self {
             mesh_pipeline: world.resource::<MeshPipeline>().clone(),
+            transforms_bgl,
         }
     }
 }
@@ -189,7 +223,7 @@ impl SpecializedRenderPipeline for MsdfPipeline {
             TextureFormat::bevy_default()
         };
 
-        let layout = vec![view_layout];
+        let layout = vec![view_layout, self.transforms_bgl.clone()];
 
         let vertex_layout = VertexBufferLayout {
             array_stride: std::mem::size_of::<GpuMsdfGlyph>() as u64,
@@ -253,23 +287,34 @@ impl SpecializedRenderPipeline for MsdfPipeline {
 pub struct DrawMsdf;
 
 impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
-    type Param = SRes<MsdfBuffers>;
+    type Param = (SRes<MsdfBuffers>, SRes<MsdfBindGroups>);
     type ViewQuery = ();
-    type ItemQuery = ();
+    type ItemQuery = &'static RenderMsdfDraw;
 
     fn render<'w>(
         _item: &P,
         _view: bevy::ecs::query::ROQueryItem<'w, Self::ViewQuery>,
-        _entity: Option<bevy::ecs::query::ROQueryItem<'w, Self::ItemQuery>>,
-        param: bevy::ecs::system::SystemParamItem<'w, '_, Self::Param>,
+        entity: Option<bevy::ecs::query::ROQueryItem<'w, Self::ItemQuery>>,
+        (buffers, bind_groups): bevy::ecs::system::SystemParamItem<'w, '_, Self::Param>,
         pass: &mut bevy::render::render_phase::TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let glyphs = &param.into_inner().glyphs;
+        let Some(draw) = entity else {
+            return RenderCommandResult::Failure;
+        };
 
-        if let Some(instances) = glyphs.buffer() {
-            pass.set_vertex_buffer(0, instances.slice(..));
-            pass.draw(0..6, 0..(glyphs.len() as u32));
-        }
+        let Some(instances) = buffers.into_inner().glyphs.buffer() else {
+            return RenderCommandResult::Failure;
+        };
+
+        let Some(transforms) = bind_groups.into_inner().transforms.as_ref() else {
+            return RenderCommandResult::Failure;
+        };
+
+        let transform_offset = (draw.transform * std::mem::size_of::<Mat4>()) as u32;
+
+        pass.set_bind_group(1, transforms, &[transform_offset]);
+        pass.set_vertex_buffer(0, instances.slice(..));
+        pass.draw(0..6, draw.vertices.clone());
 
         RenderCommandResult::Success
     }
@@ -285,8 +330,8 @@ fn queue_msdf_draws(
     pipeline: Res<MsdfPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<MsdfPipeline>>,
     pipeline_cache: Res<PipelineCache>,
+    draws: Query<(Entity, &RenderMsdfDraw)>,
     mut views: Query<(
-        Entity, // temp, used for Transparent3d.entity
         &ExtractedView,
         &mut RenderPhase<Transparent3d>,
         Option<&RenderLayers>,
@@ -301,7 +346,6 @@ fn queue_msdf_draws(
     let draw_function = draw_functions.read().get_id::<MsdfCommands>().unwrap();
 
     for (
-        entity,
         view,
         mut transparent_phase,
         render_layers,
@@ -333,21 +377,32 @@ fn queue_msdf_draws(
 
         let pipeline = pipelines.specialize(&pipeline_cache, &pipeline, key);
 
-        transparent_phase.add(Transparent3d {
-            entity,
-            distance: 0.0, // TODO plane distance sorting
-            pipeline,
-            draw_function,
-            batch_range: 0..1,
-            dynamic_offset: None,
-        });
+        for (entity, _draw) in draws.iter() {
+            transparent_phase.add(Transparent3d {
+                entity,
+                distance: 0.0, // TODO plane distance sorting
+                pipeline,
+                draw_function,
+                batch_range: 0..1,
+                dynamic_offset: None,
+            });
+        }
     }
 }
 
-pub fn extract_msdfs(in_msdfs: Extract<Query<&MsdfDraw>>, mut out_msdfs: ResMut<MsdfBuffers>) {
+pub fn extract_msdfs(
+    mut commands: Commands,
+    in_msdfs: Extract<Query<(&MsdfDraw, &GlobalTransform)>>,
+    mut out_msdfs: ResMut<MsdfBuffers>,
+) {
     out_msdfs.glyphs.clear();
+    out_msdfs.transforms.clear();
 
-    for msdf in in_msdfs.iter() {
+    for (msdf, transform) in in_msdfs.iter() {
+        let transform = out_msdfs.transforms.push(transform.compute_matrix());
+
+        let start = out_msdfs.glyphs.len() as u32;
+
         out_msdfs
             .glyphs
             .extend(msdf.glyphs.iter().map(|glyph| GpuMsdfGlyph {
@@ -355,19 +410,38 @@ pub fn extract_msdfs(in_msdfs: Extract<Query<&MsdfDraw>>, mut out_msdfs: ResMut<
                 color: glyph.color.as_rgba_u32(),
                 index: glyph.index as u32,
             }));
+
+        let end = out_msdfs.glyphs.len() as u32;
+
+        commands.spawn(RenderMsdfDraw {
+            vertices: start..end,
+            transform,
+        });
     }
 }
 
-pub fn prepare_msdfs(
+pub fn prepare_msdf_resources(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut bufs: ResMut<MsdfBuffers>,
 ) {
-    if bufs.glyphs.is_empty() {
-        return;
-    }
-
-    let len = bufs.glyphs.len();
-    bufs.glyphs.reserve(len, &device);
     bufs.glyphs.write_buffer(&device, &queue);
+    bufs.transforms.write_buffer(&device, &queue);
+}
+
+pub fn prepare_msdf_bind_groups(
+    device: Res<RenderDevice>,
+    pipeline: Res<MsdfPipeline>,
+    bufs: Res<MsdfBuffers>,
+    mut groups: ResMut<MsdfBindGroups>,
+) {
+    groups.transforms = None;
+
+    if let Some(transforms) = bufs.transforms.buffer() {
+        groups.transforms = Some(device.create_bind_group(
+            "msdf_transforms_bind_group",
+            &pipeline.transforms_bgl,
+            &BindGroupEntries::single(transforms.as_entire_binding()),
+        ));
+    }
 }
