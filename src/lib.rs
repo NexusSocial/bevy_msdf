@@ -28,7 +28,8 @@ use bevy::{
     },
     utils::BoxedFuture,
 };
-use owned_ttf_parser::OwnedFace;
+use font_mud::{error::FontError, glyph_atlas::GlyphAtlas};
+use owned_ttf_parser::{AsFaceRef, OwnedFace};
 use thiserror::Error;
 use wgpu::{
     BlendState, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
@@ -45,6 +46,16 @@ pub enum MsdfAtlasLoaderError {
     /// A [owned_ttf_parser::FaceParsingError] Error
     #[error(transparent)]
     FontInvalid(#[from] owned_ttf_parser::FaceParsingError),
+    /// A [font_mud::error::FontError] Error
+    // TODO implement Error for FontError upstream
+    #[error("font error: {0}")]
+    FontError(FontError),
+}
+
+impl From<FontError> for MsdfAtlasLoaderError {
+    fn from(err: FontError) -> Self {
+        MsdfAtlasLoaderError::FontError(err)
+    }
 }
 
 #[derive(Default)]
@@ -66,7 +77,8 @@ impl AssetLoader for MsdfAtlasLoader {
             reader.read_to_end(&mut bytes).await?;
             // TODO support non-zero face indices
             let face = OwnedFace::from_vec(bytes, 0)?;
-            Ok(MsdfAtlas { face })
+            let (atlas, _glyph_errors) = GlyphAtlas::new(face.as_face_ref())?;
+            Ok(MsdfAtlas { face, atlas })
         })
     }
 }
@@ -74,6 +86,7 @@ impl AssetLoader for MsdfAtlasLoader {
 #[derive(Asset, TypePath)]
 pub struct MsdfAtlas {
     pub face: OwnedFace,
+    pub atlas: GlyphAtlas,
 }
 
 /// A bundle of the components necessary to draw a plane of MSDF glyphs.

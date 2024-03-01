@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bytemuck = "*"
+font-mud = { git = "https://git.disroot.org/hearth/font-mud", rev = "c1e6b66f45" }
 owned_ttf_parser = "0.19"
 thiserror = "1"
 wgpu = { version = "0.19", default-features = false }
