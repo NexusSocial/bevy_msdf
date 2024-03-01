@@ -1,9 +1,11 @@
 use bevy::{
     asset::{io::Reader, load_internal_asset, AssetLoader, AsyncReadExt, LoadContext},
+    core::{Pod, Zeroable},
     core_pipeline::{
         core_3d::{Transparent3d, CORE_3D_DEPTH_FORMAT},
         prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass, NormalPrepass},
     },
+    ecs::system::lifetimeless::SRes,
     pbr::{MeshPipeline, MeshPipelineKey, SetMeshViewBindGroup},
     prelude::*,
     render::{
@@ -12,20 +14,21 @@ use bevy::{
             RenderPhase, SetItemPipeline,
         },
         render_resource::{
-            FragmentState, PipelineCache, RenderPipelineDescriptor, SpecializedRenderPipeline,
-            SpecializedRenderPipelines, VertexState,
+            BufferVec, FragmentState, PipelineCache, RenderPipelineDescriptor,
+            SpecializedRenderPipeline, SpecializedRenderPipelines, VertexBufferLayout, VertexState,
         },
+        renderer::{RenderDevice, RenderQueue},
         texture::BevyDefault,
         view::{ExtractedView, RenderLayers, ViewTarget},
-        Render, RenderApp, RenderSet,
+        Extract, Render, RenderApp, RenderSet,
     },
     utils::BoxedFuture,
 };
 use owned_ttf_parser::OwnedFace;
 use thiserror::Error;
 use wgpu::{
-    BlendState, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
-    MultisampleState, PrimitiveState, TextureFormat,
+    BlendState, BufferUsages, ColorTargetState, ColorWrites, CompareFunction, DepthStencilState,
+    MultisampleState, PrimitiveState, TextureFormat, VertexAttribute, VertexFormat,
 };
 
 /// Possible errors that can be produced by [MsdfAtlasLoader]
@@ -110,7 +113,15 @@ impl Plugin for MsdfPlugin {
         render_app
             .add_render_command::<Transparent3d, MsdfCommands>()
             .init_resource::<SpecializedRenderPipelines<MsdfPipeline>>()
-            .add_systems(Render, queue_msdf_draws.in_set(RenderSet::Queue));
+            .init_resource::<MsdfBuffers>()
+            .add_systems(
+                Render,
+                (
+                    prepare_msdfs.in_set(RenderSet::PrepareResources),
+                    queue_msdf_draws.in_set(RenderSet::Queue),
+                ),
+            )
+            .add_systems(ExtractSchedule, extract_msdfs);
     }
 
     fn finish(&self, app: &mut App) {
@@ -119,6 +130,29 @@ impl Plugin for MsdfPlugin {
         };
 
         render_app.init_resource::<MsdfPipeline>();
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct GpuMsdfGlyph {
+    pub position: Vec2,
+    pub color: u32,
+    pub index: u32,
+}
+
+#[derive(Resource)]
+pub struct MsdfBuffers {
+    pub glyphs: BufferVec<GpuMsdfGlyph>,
+}
+
+impl Default for MsdfBuffers {
+    fn default() -> Self {
+        Self {
+            glyphs: BufferVec::new(
+                BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::VERTEX,
+            ),
+        }
     }
 }
 
@@ -157,6 +191,28 @@ impl SpecializedRenderPipeline for MsdfPipeline {
 
         let layout = vec![view_layout];
 
+        let vertex_layout = VertexBufferLayout {
+            array_stride: std::mem::size_of::<GpuMsdfGlyph>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: vec![
+                VertexAttribute {
+                    format: VertexFormat::Float32x2,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Unorm8x4,
+                    offset: 8,
+                    shader_location: 1,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Uint32,
+                    offset: 12,
+                    shader_location: 2,
+                },
+            ],
+        };
+
         RenderPipelineDescriptor {
             label: Some("MSDF Pipeline".into()),
             layout,
@@ -165,7 +221,7 @@ impl SpecializedRenderPipeline for MsdfPipeline {
                 shader: SHADER_HANDLE,
                 entry_point: "vertex".into(),
                 shader_defs: vec![],
-                buffers: vec![],
+                buffers: vec![vertex_layout],
             },
             primitive: PrimitiveState::default(),
             depth_stencil: Some(DepthStencilState {
@@ -197,7 +253,7 @@ impl SpecializedRenderPipeline for MsdfPipeline {
 pub struct DrawMsdf;
 
 impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
-    type Param = ();
+    type Param = SRes<MsdfBuffers>;
     type ViewQuery = ();
     type ItemQuery = ();
 
@@ -205,10 +261,16 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
         _item: &P,
         _view: bevy::ecs::query::ROQueryItem<'w, Self::ViewQuery>,
         _entity: Option<bevy::ecs::query::ROQueryItem<'w, Self::ItemQuery>>,
-        _param: bevy::ecs::system::SystemParamItem<'w, '_, Self::Param>,
+        param: bevy::ecs::system::SystemParamItem<'w, '_, Self::Param>,
         pass: &mut bevy::render::render_phase::TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        pass.draw(0..6, 0..1);
+        let glyphs = &param.into_inner().glyphs;
+
+        if let Some(instances) = glyphs.buffer() {
+            pass.set_vertex_buffer(0, instances.slice(..));
+            pass.draw(0..6, 0..(glyphs.len() as u32));
+        }
+
         RenderCommandResult::Success
     }
 }
@@ -280,4 +342,32 @@ fn queue_msdf_draws(
             dynamic_offset: None,
         });
     }
+}
+
+pub fn extract_msdfs(in_msdfs: Extract<Query<&MsdfDraw>>, mut out_msdfs: ResMut<MsdfBuffers>) {
+    out_msdfs.glyphs.clear();
+
+    for msdf in in_msdfs.iter() {
+        out_msdfs
+            .glyphs
+            .extend(msdf.glyphs.iter().map(|glyph| GpuMsdfGlyph {
+                position: glyph.pos,
+                color: glyph.color.as_rgba_u32(),
+                index: glyph.index as u32,
+            }));
+    }
+}
+
+pub fn prepare_msdfs(
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    mut bufs: ResMut<MsdfBuffers>,
+) {
+    if bufs.glyphs.is_empty() {
+        return;
+    }
+
+    let len = bufs.glyphs.len();
+    bufs.glyphs.reserve(len, &device);
+    bufs.glyphs.write_buffer(&device, &queue);
 }
