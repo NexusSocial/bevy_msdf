@@ -151,6 +151,8 @@ impl RenderAsset for MsdfAtlas {
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("msdf atlas sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
