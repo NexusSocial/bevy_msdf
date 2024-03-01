@@ -7,7 +7,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(MsdfPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, layout)
+        .add_systems(Update, (layout, rotate))
         .run();
 }
 
@@ -60,6 +60,16 @@ fn layout(
                     Some(MsdfGlyph { pos, color, index })
                 })
                 .collect();
+
+            let center = Vec2::new(draw.glyphs.len() as f32 / -2.0, 0.0);
+
+            draw.glyphs.iter_mut().for_each(|glyph| glyph.pos += center);
         }
+    }
+}
+
+fn rotate(mut draws: Query<&mut Transform, With<MsdfDraw>>) {
+    for mut draw in draws.iter_mut() {
+        draw.rotate_z(0.01);
     }
 }
