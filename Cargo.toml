@@ -1,0 +1,19 @@
+[package]
+name = "bevy_msdf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+owned_ttf_parser = "0.19"
+thiserror = "1"
+wgpu = { version = "0.19", default-features = false }
+
+[dependencies.bevy]
+version = "0.13"
+default-features = false
+features = ["bevy_asset", "bevy_render"]
+
+[dev-dependencies.bevy]
+version = "0.13"
+default-features = false
+features = ["bevy_core_pipeline", "bevy_render", "bevy_winit", "x11"]
