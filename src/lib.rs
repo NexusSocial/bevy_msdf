@@ -348,6 +348,7 @@ pub struct GpuMsdfGlyphSource {
 pub struct RenderMsdfDraw {
     pub atlas: AssetId<MsdfAtlas>,
     pub vertices: Range<u32>,
+    pub position: Vec3,
     pub transform: usize,
 }
 
@@ -607,10 +608,15 @@ fn queue_msdf_draws(
 
         let pipeline = pipelines.specialize(&pipeline_cache, &pipeline, key);
 
-        for (entity, _draw) in draws.iter() {
+        let eye = view.transform.translation();
+
+        for (entity, draw) in draws.iter() {
+            // TODO ensure this actually works
+            let distance = eye.distance(draw.position);
+
             transparent_phase.add(Transparent3d {
                 entity,
-                distance: 0.0, // TODO plane distance sorting
+                distance,
                 pipeline,
                 draw_function,
                 batch_range: 0..1,
@@ -632,6 +638,8 @@ pub fn extract_msdfs(
     let mut used_glyphs: HashMap<AssetId<MsdfAtlas>, HashSet<u16>> = HashMap::new();
 
     for (msdf, transform) in in_msdfs.iter() {
+        let position = transform.translation();
+
         let transform = out_msdfs.transforms.push(transform.compute_matrix());
 
         let start = out_msdfs.glyphs.len() as u32;
@@ -649,6 +657,7 @@ pub fn extract_msdfs(
         commands.spawn(RenderMsdfDraw {
             atlas: msdf.atlas.id(),
             vertices: start..end,
+            position,
             transform,
         });
 
