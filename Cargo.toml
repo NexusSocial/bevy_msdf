@@ -18,4 +18,4 @@ features = ["bevy_asset", "bevy_render"]
 [dev-dependencies.bevy]
 version = "0.13"
 default-features = false
-features = ["bevy_core_pipeline", "bevy_render", "bevy_pbr", "bevy_winit", "multi-threaded", "x11"]
+features = ["bevy_core_pipeline", "bevy_render", "bevy_pbr", "bevy_winit", "multi-threaded", "x11", "tonemapping_luts"]
