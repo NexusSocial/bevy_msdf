@@ -200,7 +200,20 @@ pub struct MsdfBundle {
     pub global_transform: GlobalTransform,
 }
 
-/// A component that draws a list of glyphs onto a plane.
+/// A component that shapes and draws text using [MsdfDraw].
+#[derive(Component)]
+pub struct MsdfText {
+    /// The [MsdfAtlas] to use for this text.
+    pub atlas: Handle<MsdfAtlas>,
+
+    /// The text to render.
+    pub content: String,
+
+    /// The text's color.
+    pub color: Color,
+}
+
+/// A component that draws a list of atlas glyphs onto a plane.
 #[derive(Component)]
 pub struct MsdfDraw {
     /// The [MsdfAtlas] to use for this draw.
@@ -222,6 +235,56 @@ pub struct MsdfGlyph {
     pub index: u16,
 }
 
+pub fn layout(
+    mut commands: Commands,
+    mut atlas_events: EventReader<AssetEvent<MsdfAtlas>>,
+    texts: Query<(Entity, Ref<MsdfText>)>,
+    atlases: Res<Assets<MsdfAtlas>>,
+) {
+    let loaded_atlases = atlas_events
+        .read()
+        .filter_map(|ev| match ev {
+            AssetEvent::LoadedWithDependencies { id } => Some(id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+
+    for (entity, text) in texts.iter() {
+        if !text.is_changed() && !loaded_atlases.contains(&text.atlas.id()) {
+            continue;
+        }
+
+        let Some(atlas) = atlases.get(&text.atlas) else {
+            continue;
+        };
+
+        let mut draw = MsdfDraw {
+            atlas: text.atlas.clone(),
+            glyphs: vec![],
+        };
+
+        let mut len = 0.0;
+
+        for (x, c) in text.content.chars().enumerate() {
+            if let Some(glyph) = atlas.face.as_face_ref().glyph_index(c) {
+                draw.glyphs.push(MsdfGlyph {
+                    pos: Vec2::new(x as f32, 0.0),
+                    color: text.color,
+                    index: glyph.0,
+                });
+            }
+
+            len += 1.0;
+        }
+
+        draw.glyphs
+            .iter_mut()
+            .for_each(|glyph| glyph.pos.x -= len / 2.0);
+
+        commands.entity(entity).insert(draw);
+    }
+}
+
 const SHADER_HANDLE: Handle<Shader> =
     Handle::weak_from_u128(167821518087860206701142330598674077861);
 
@@ -233,7 +296,8 @@ impl Plugin for MsdfPlugin {
 
         app.init_asset::<MsdfAtlas>()
             .init_asset_loader::<MsdfAtlasLoader>()
-            .add_plugins(RenderAssetPlugin::<MsdfAtlas>::default());
+            .add_plugins(RenderAssetPlugin::<MsdfAtlas>::default())
+            .add_systems(PostUpdate, layout);
 
         let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
