@@ -139,23 +139,23 @@ pub fn layout(
             glyphs: vec![],
         };
 
-        let mut len = 0.0;
+        let mut cursor = 0.0;
 
-        for (x, c) in text.content.chars().enumerate() {
+        for c in text.content.chars() {
             if let Some(glyph) = atlas.face.as_face_ref().glyph_index(c) {
                 draw.glyphs.push(MsdfGlyph {
-                    pos: Vec2::new(x as f32, 0.0),
+                    pos: Vec2::new(cursor, 0.0),
                     color: text.color,
                     index: glyph.0,
                 });
             }
 
-            len += 1.0;
+            cursor += 0.7;
         }
 
         draw.glyphs
             .iter_mut()
-            .for_each(|glyph| glyph.pos.x -= len / 2.0);
+            .for_each(|glyph| glyph.pos.x -= cursor / 2.0);
 
         commands.entity(entity).insert(draw);
     }
