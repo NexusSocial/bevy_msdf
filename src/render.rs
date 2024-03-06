@@ -55,7 +55,7 @@ impl RenderAsset for MsdfAtlas {
     type Param = (SRes<RenderDevice>, SRes<RenderQueue>, SRes<MsdfPipeline>);
 
     fn asset_usage(&self) -> RenderAssetUsages {
-        RenderAssetUsages::RENDER_WORLD
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD
     }
 
     fn prepare_asset(
