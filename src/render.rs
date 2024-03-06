@@ -20,8 +20,9 @@ use bevy::{
         render_resource::{
             binding_types::{sampler, storage_buffer_read_only_sized, texture_2d, uniform_buffer},
             BindGroup, BindGroupEntries, BindGroupLayout, BindGroupLayoutEntries, BufferVec,
-            FragmentState, PipelineCache, RenderPipelineDescriptor, SpecializedRenderPipeline,
-            SpecializedRenderPipelines, Texture, VertexBufferLayout, VertexState,
+            FragmentState, PipelineCache, RenderPipelineDescriptor, ShaderType,
+            SpecializedRenderPipeline, SpecializedRenderPipelines, Texture, VertexBufferLayout,
+            VertexState,
         },
         renderer::{RenderDevice, RenderQueue},
         texture::BevyDefault,
@@ -171,12 +172,19 @@ impl Plugin for MsdfRenderPlugin {
         render_app.init_resource::<MsdfPipeline>();
     }
 }
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuMsdfGlyph {
     pub position: Vec2,
     pub color: u32,
     pub index: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, ShaderType)]
+pub struct GpuUniform {
+    pub transform: Mat4,
 }
 
 #[repr(C)]
@@ -191,7 +199,7 @@ pub struct RenderMsdfDraw {
     pub atlas: AssetId<MsdfAtlas>,
     pub vertices: Range<u32>,
     pub position: Vec3,
-    pub transform: usize,
+    pub uniform: usize,
 }
 
 pub struct MsdfAtlasWrite {
@@ -204,7 +212,7 @@ pub struct MsdfAtlasWrite {
 #[derive(Resource)]
 pub struct MsdfBuffers {
     pub glyphs: BufferVec<GpuMsdfGlyph>,
-    pub transforms: BufferVec<Mat4>,
+    pub uniforms: BufferVec<GpuUniform>,
     pub pending_writes: Vec<MsdfAtlasWrite>,
 }
 
@@ -212,7 +220,7 @@ impl Default for MsdfBuffers {
     fn default() -> Self {
         Self {
             glyphs: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::VERTEX),
-            transforms: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::UNIFORM),
+            uniforms: BufferVec::new(BufferUsages::COPY_DST | BufferUsages::UNIFORM),
             pending_writes: vec![],
         }
     }
@@ -220,7 +228,7 @@ impl Default for MsdfBuffers {
 
 #[derive(Default, Resource)]
 pub struct MsdfBindGroups {
-    pub transforms: Option<BindGroup>,
+    pub uniforms: Option<BindGroup>,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -231,7 +239,7 @@ pub struct MsdfPipelineKey {
 #[derive(Resource)]
 pub struct MsdfPipeline {
     pub mesh_pipeline: MeshPipeline,
-    pub transforms_bgl: BindGroupLayout,
+    pub uniforms_bgl: BindGroupLayout,
     pub atlas_bgl: BindGroupLayout,
 }
 
@@ -239,9 +247,12 @@ impl FromWorld for MsdfPipeline {
     fn from_world(world: &mut World) -> Self {
         let render_device = world.resource::<RenderDevice>();
 
-        let transforms_bgl = render_device.create_bind_group_layout(
-            Some("msdf_transforms_bind_group_layout"),
-            &BindGroupLayoutEntries::single(ShaderStages::VERTEX, uniform_buffer::<Mat4>(true)),
+        let uniforms_bgl = render_device.create_bind_group_layout(
+            Some("msdf_uniforms_bind_group_layout"),
+            &BindGroupLayoutEntries::single(
+                ShaderStages::VERTEX,
+                uniform_buffer::<GpuUniform>(true),
+            ),
         );
 
         let atlas_bgl = render_device.create_bind_group_layout(
@@ -258,7 +269,7 @@ impl FromWorld for MsdfPipeline {
 
         Self {
             mesh_pipeline: world.resource::<MeshPipeline>().clone(),
-            transforms_bgl,
+            uniforms_bgl,
             atlas_bgl,
         }
     }
@@ -281,7 +292,7 @@ impl SpecializedRenderPipeline for MsdfPipeline {
 
         let layout = vec![
             view_layout,
-            self.transforms_bgl.clone(),
+            self.uniforms_bgl.clone(),
             self.atlas_bgl.clone(),
         ];
 
@@ -378,14 +389,14 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
             return RenderCommandResult::Failure;
         };
 
-        let Some(transforms) = bind_groups.into_inner().transforms.as_ref() else {
+        let Some(uniforms) = bind_groups.into_inner().uniforms.as_ref() else {
             return RenderCommandResult::Failure;
         };
 
-        let transform_offset = (draw.transform * std::mem::size_of::<Mat4>()) as u32;
+        let uniforms_offset = (draw.uniform * std::mem::size_of::<Mat4>()) as u32;
 
         pass.set_vertex_buffer(0, instances.slice(..));
-        pass.set_bind_group(1, transforms, &[transform_offset]);
+        pass.set_bind_group(1, uniforms, &[uniforms_offset]);
         pass.set_bind_group(2, &atlas.bind_group, &[]);
         pass.draw(0..4, draw.vertices.clone());
 
@@ -475,14 +486,16 @@ pub fn extract_msdfs(
     mut atlases: ResMut<RenderAssets<MsdfAtlas>>,
 ) {
     out_msdfs.glyphs.clear();
-    out_msdfs.transforms.clear();
+    out_msdfs.uniforms.clear();
 
     let mut used_glyphs: HashMap<AssetId<MsdfAtlas>, HashSet<u16>> = HashMap::new();
 
     for (msdf, transform) in in_msdfs.iter() {
         let position = transform.translation();
 
-        let transform = out_msdfs.transforms.push(transform.compute_matrix());
+        let uniform = out_msdfs.uniforms.push(GpuUniform {
+            transform: transform.compute_matrix(),
+        });
 
         let start = out_msdfs.glyphs.len() as u32;
 
@@ -500,7 +513,7 @@ pub fn extract_msdfs(
             atlas: msdf.atlas.id(),
             vertices: start..end,
             position,
-            transform,
+            uniform,
         });
 
         used_glyphs
@@ -598,7 +611,7 @@ pub fn prepare_msdf_resources(
     mut bufs: ResMut<MsdfBuffers>,
 ) {
     bufs.glyphs.write_buffer(&device, &queue);
-    bufs.transforms.write_buffer(&device, &queue);
+    bufs.uniforms.write_buffer(&device, &queue);
 }
 
 pub fn prepare_msdf_bind_groups(
@@ -607,13 +620,13 @@ pub fn prepare_msdf_bind_groups(
     bufs: Res<MsdfBuffers>,
     mut groups: ResMut<MsdfBindGroups>,
 ) {
-    groups.transforms = None;
+    groups.uniforms = None;
 
-    if let Some(transforms) = bufs.transforms.buffer() {
-        groups.transforms = Some(device.create_bind_group(
-            "msdf_transforms_bind_group",
-            &pipeline.transforms_bgl,
-            &BindGroupEntries::single(transforms.as_entire_binding()),
+    if let Some(uniforms) = bufs.uniforms.buffer() {
+        groups.uniforms = Some(device.create_bind_group(
+            "msdf_uniforms_bind_group",
+            &pipeline.uniforms_bgl,
+            &BindGroupEntries::single(uniforms.as_entire_binding()),
         ));
     }
 }
