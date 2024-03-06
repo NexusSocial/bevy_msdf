@@ -33,10 +33,8 @@ fn vertex(vertex: VertexInput) -> VertexOutput {
     return VertexOutput(position, vertex.color, uv);
 }
 
-fn screen_px_range(tex_coords: vec2<f32>) -> f32 {
-    let msdf_range = 8.0;
-    let unit_range = vec2<f32>(msdf_range) / vec2<f32>(textureDimensions(atlas_texture, 0));
-    let screen_tex_size = vec2<f32>(1.0) / fwidth(tex_coords);
+fn screen_px_range(unit_range: vec2<f32>, uv: vec2<f32>) -> f32 {
+    let screen_tex_size = vec2<f32>(1.0) / fwidth(uv);
     return max(0.5 * dot(unit_range, screen_tex_size), 1.0);
 }
 
@@ -44,11 +42,34 @@ fn median(r: f32, g: f32, b: f32) -> f32 {
     return max(min(r, g), min(max(r, g), b));
 }
 
+fn msdf_alpha_at(unit_range: vec2<f32>, uv: vec2<f32>, bias: f32) -> f32 {
+    let msd = textureSample(atlas_texture, atlas_sampler, uv);
+    let sd = median(msd.r, msd.g, msd.b);
+    let dist = screen_px_range(unit_range, uv) * (sd - bias);
+    return clamp(dist + 0.5, 0.0, 1.0);
+}
+
+fn blend(base: vec4<f32>, layer: vec3<f32>, blend: f32) -> vec4<f32> {
+    return base * (1.0 - blend) + vec4<f32>(layer, blend) * blend;
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let msd = textureSample(atlas_texture, atlas_sampler, in.uv);
-    let sd = median(msd.r, msd.g, msd.b);
-    let dist = screen_px_range(in.uv) * (sd - 0.5);
-    let alpha = clamp(dist + 0.5, 0.0, 1.0);
-    return vec4<f32>(in.color.rgb, alpha);
+    // calculate unit range for repeat screen coverage calculations
+    let msdf_range = 8.0;
+    let unit_range = vec2<f32>(msdf_range) / vec2<f32>(textureDimensions(atlas_texture, 0));
+
+    // begin blending together colors
+    var output = vec4<f32>(0.0);
+
+    // border
+    let border = msdf_alpha_at(unit_range, in.uv, 0.35);
+    let border_color = vec3<f32>(0.0, 0.0, 0.0);
+    output = blend(output, border_color, border);
+
+    // main color
+    let main = msdf_alpha_at(unit_range, in.uv, 0.5);
+    output = blend(output, in.color.rgb, main);
+
+    return output;
 }
