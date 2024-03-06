@@ -16,6 +16,10 @@ struct VertexInput {
 
 struct Uniform {
     transform: mat4x4<f32>,
+    border_color: vec4<f32>,
+    glow_color: vec4<f32>,
+    glow_offset_size: vec3<f32>,
+    border_size: f32,
 };
 
 struct VertexOutput {
@@ -62,14 +66,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // begin blending together colors
     var output = vec4<f32>(0.0);
 
+    // glow
+    if ubo.glow_offset_size.x > 0.0 {
+        let uv = in.uv + ubo.glow_offset_size.xy;
+        let glow = msdf_alpha_at(unit_range, uv, 0.5 - ubo.glow_offset_size.z);
+        output = blend(output, ubo.glow_color.rgb, glow * ubo.glow_color.a);
+    }
+
     // border
-    let border = msdf_alpha_at(unit_range, in.uv, 0.35);
-    let border_color = vec3<f32>(0.0, 0.0, 0.0);
-    output = blend(output, border_color, border);
+    if ubo.border_size > 0.0 {
+        let border = msdf_alpha_at(unit_range, in.uv, 0.5 - ubo.border_size);
+        output = blend(output, ubo.border_color.rgb, border * ubo.border_color.a);
+    }
 
     // main color
     let main = msdf_alpha_at(unit_range, in.uv, 0.5);
-    output = blend(output, in.color.rgb, main);
+    output = blend(output, in.color.rgb, main * in.color.a);
 
     return output;
 }

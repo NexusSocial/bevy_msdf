@@ -36,7 +36,7 @@ use bytemuck::{Pod, Zeroable};
 use font_mud::{glyph_atlas::GlyphAtlas, glyph_bitmap::GlyphBitmap};
 use wgpu::{util::TextureDataOrder, *};
 
-use crate::{MsdfAtlas, MsdfDraw};
+use crate::{MsdfAtlas, MsdfBorder, MsdfDraw, MsdfGlow};
 
 const SHADER_HANDLE: Handle<Shader> =
     Handle::weak_from_u128(167821518087860206701142330598674077861);
@@ -185,6 +185,10 @@ pub struct GpuMsdfGlyph {
 #[derive(Clone, Copy, Pod, Zeroable, ShaderType)]
 pub struct GpuUniform {
     pub transform: Mat4,
+    pub border_color: Vec4,
+    pub glow_color: Vec4,
+    pub glow_offset_size: Vec3,
+    pub border_size: f32,
 }
 
 #[repr(C)]
@@ -250,7 +254,7 @@ impl FromWorld for MsdfPipeline {
         let uniforms_bgl = render_device.create_bind_group_layout(
             Some("msdf_uniforms_bind_group_layout"),
             &BindGroupLayoutEntries::single(
-                ShaderStages::VERTEX,
+                ShaderStages::VERTEX_FRAGMENT,
                 uniform_buffer::<GpuUniform>(true),
             ),
         );
@@ -258,7 +262,7 @@ impl FromWorld for MsdfPipeline {
         let atlas_bgl = render_device.create_bind_group_layout(
             Some("msdf_atlas_bind_group_layout"),
             &BindGroupLayoutEntries::sequential(
-                ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                ShaderStages::VERTEX_FRAGMENT,
                 (
                     texture_2d(TextureSampleType::Float { filterable: true }),
                     sampler(SamplerBindingType::Filtering),
@@ -481,7 +485,14 @@ fn queue_msdf_draws(
 
 pub fn extract_msdfs(
     mut commands: Commands,
-    in_msdfs: Extract<Query<(&MsdfDraw, &GlobalTransform)>>,
+    in_msdfs: Extract<
+        Query<(
+            &MsdfDraw,
+            &GlobalTransform,
+            Option<&MsdfBorder>,
+            Option<&MsdfGlow>,
+        )>,
+    >,
     mut out_msdfs: ResMut<MsdfBuffers>,
     mut atlases: ResMut<RenderAssets<MsdfAtlas>>,
 ) {
@@ -490,11 +501,23 @@ pub fn extract_msdfs(
 
     let mut used_glyphs: HashMap<AssetId<MsdfAtlas>, HashSet<u16>> = HashMap::new();
 
-    for (msdf, transform) in in_msdfs.iter() {
+    for (msdf, transform, border, glow) in in_msdfs.iter() {
         let position = transform.translation();
+
+        let (border_color, border_size) = border
+            .map(|border| (border.color.rgba_to_vec4(), border.size))
+            .unwrap_or((Vec4::ZERO, -1.0));
+
+        let (glow_color, glow_offset_size) = glow
+            .map(|glow| (glow.color.rgba_to_vec4(), glow.offset.extend(glow.size)))
+            .unwrap_or((Vec4::ZERO, Vec3::NEG_ONE));
 
         let uniform = out_msdfs.uniforms.push(GpuUniform {
             transform: transform.compute_matrix(),
+            border_color,
+            glow_color,
+            border_size,
+            glow_offset_size,
         });
 
         let start = out_msdfs.glyphs.len() as u32;

@@ -76,6 +76,29 @@ pub struct MsdfBundle {
     pub global_transform: GlobalTransform,
 }
 
+/// Applies a border style to a [MsdfDraw] or [MsdfText].
+#[derive(Component)]
+pub struct MsdfBorder {
+    /// The color of the border.
+    pub color: Color,
+
+    /// The border thickness in (TODO) some unknown unit.
+    pub size: f32,
+}
+
+/// Applies a glow/drop shadow effect to a [MsdfDraw] or [MsdfText].
+#[derive(Component)]
+pub struct MsdfGlow {
+    /// The color of the glow.
+    pub color: Color,
+
+    /// The radius of the glow in (TODO) some unknown unit.
+    pub size: f32,
+
+    /// The offset of the glow from the main text in (TODO) some unknown unit.
+    pub offset: Vec2,
+}
+
 /// A component that shapes and draws text using [MsdfDraw].
 #[derive(Component)]
 pub struct MsdfText {
