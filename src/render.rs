@@ -189,6 +189,7 @@ pub struct GpuUniform {
     pub glow_color: Vec4,
     pub glow_offset_size: Vec3,
     pub border_size: f32,
+    pub padding: Vec4, // align uniform to 32 bytes
 }
 
 #[repr(C)]
@@ -397,7 +398,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
             return RenderCommandResult::Failure;
         };
 
-        let uniforms_offset = (draw.uniform * std::mem::size_of::<Mat4>()) as u32;
+        let uniforms_offset = (draw.uniform * std::mem::size_of::<GpuUniform>()) as u32;
 
         pass.set_vertex_buffer(0, instances.slice(..));
         pass.set_bind_group(1, uniforms, &[uniforms_offset]);
@@ -518,6 +519,7 @@ pub fn extract_msdfs(
             glow_color,
             border_size,
             glow_offset_size,
+            padding: Vec4::ZERO,
         });
 
         let start = out_msdfs.glyphs.len() as u32;
@@ -646,10 +648,20 @@ pub fn prepare_msdf_bind_groups(
     groups.uniforms = None;
 
     if let Some(uniforms) = bufs.uniforms.buffer() {
-        groups.uniforms = Some(device.create_bind_group(
-            "msdf_uniforms_bind_group",
-            &pipeline.uniforms_bgl,
-            &BindGroupEntries::single(uniforms.as_entire_binding()),
-        ));
+        groups.uniforms = Some(
+            device.create_bind_group(
+                "msdf_uniforms_bind_group",
+                &pipeline.uniforms_bgl,
+                &BindGroupEntries::single(BufferBinding {
+                    buffer: uniforms,
+                    offset: 0,
+                    size: Some(
+                        (std::mem::size_of::<GpuUniform>() as BufferAddress)
+                            .try_into()
+                            .unwrap(),
+                    ),
+                }),
+            ),
+        );
     }
 }

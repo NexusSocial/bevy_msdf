@@ -21,4 +21,4 @@ bevy_egui = "0.25"
 [dev-dependencies.bevy]
 version = "0.13"
 default-features = false
-features = ["bevy_core_pipeline", "bevy_render", "bevy_pbr", "bevy_winit", "multi-threaded", "x11", "tonemapping_luts"]
+features = ["bevy_core_pipeline", "bevy_render", "bevy_pbr", "bevy_winit", "multi-threaded", "x11", "tonemapping_luts", "dynamic_linking"]
