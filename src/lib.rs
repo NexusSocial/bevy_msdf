@@ -9,6 +9,8 @@ use font_mud::{error::FontError, glyph_atlas::GlyphAtlas};
 use owned_ttf_parser::{AsFaceRef, OwnedFace};
 use thiserror::Error;
 
+pub use font_mud;
+
 pub mod render;
 
 /// Possible errors that can be produced by [MsdfAtlasLoader]
