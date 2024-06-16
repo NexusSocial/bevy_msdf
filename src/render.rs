@@ -506,11 +506,16 @@ pub fn extract_msdfs(
         let position = transform.translation();
 
         let (border_color, border_size) = border
-            .map(|border| (border.color.rgba_to_vec4(), border.size))
+            .map(|border| (border.color.as_linear_rgba_f32().into(), border.size))
             .unwrap_or((Vec4::ZERO, -1.0));
 
         let (glow_color, glow_offset_size) = glow
-            .map(|glow| (glow.color.rgba_to_vec4(), glow.offset.extend(glow.size)))
+            .map(|glow| {
+                (
+                    glow.color.as_linear_rgba_f32().into(),
+                    glow.offset.extend(glow.size),
+                )
+            })
             .unwrap_or((Vec4::ZERO, Vec3::NEG_ONE));
 
         let uniform = out_msdfs.uniforms.push(GpuUniform {
@@ -528,7 +533,7 @@ pub fn extract_msdfs(
             .glyphs
             .extend(msdf.glyphs.iter().map(|glyph| GpuMsdfGlyph {
                 position: glyph.pos,
-                color: glyph.color.as_rgba_u32(),
+                color: glyph.color.as_linear_rgba_u32(),
                 index: glyph.index as u32,
             }));
 
