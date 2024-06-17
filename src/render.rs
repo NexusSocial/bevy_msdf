@@ -339,7 +339,7 @@ impl SpecializedRenderPipeline for MsdfPipeline {
             },
             depth_stencil: Some(DepthStencilState {
                 format: CORE_3D_DEPTH_FORMAT,
-                depth_write_enabled: true,
+                depth_write_enabled: false,
                 depth_compare: CompareFunction::Greater,
                 stencil: Default::default(),
                 bias: Default::default(),
