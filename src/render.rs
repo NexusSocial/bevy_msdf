@@ -463,18 +463,13 @@ fn queue_msdf_draws(
         }
 
         let key = MsdfPipelineKey { view_key };
-
         let pipeline = pipelines.specialize(&pipeline_cache, &pipeline, key);
-
-        let eye = view.transform.translation();
+        let rangefinder = view.rangefinder3d();
 
         for (entity, draw) in draws.iter() {
-            // TODO ensure this actually works
-            let distance = eye.distance(draw.position);
-
             transparent_phase.add(Transparent3d {
                 entity,
-                distance,
+                distance: rangefinder.distance_translation(&draw.position),
                 pipeline,
                 draw_function,
                 batch_range: 0..1,
@@ -503,7 +498,7 @@ pub fn extract_msdfs(
     let mut used_glyphs: HashMap<AssetId<MsdfAtlas>, HashSet<u16>> = HashMap::new();
 
     for (msdf, transform, border, glow) in in_msdfs.iter() {
-        let position = transform.translation();
+        let position = transform.transform_point(Vec3::ZERO);
 
         let (border_color, border_size) = border
             .map(|border| (border.color.as_linear_rgba_f32().into(), border.size))
