@@ -88,7 +88,7 @@ impl Viewer {
     }
 
     fn update(&mut self, commands: &mut Commands, entity: Entity, text: &mut MsdfText) {
-        text.content = self.contents.clone();
+        text.content.clone_from(&self.contents);
         text.color = self.text_color;
 
         let mut entity = commands.entity(entity);

@@ -33,10 +33,12 @@ use bevy::{
     utils::{HashMap, HashSet},
 };
 use bytemuck::{Pod, Zeroable};
-use font_mud::{glyph_atlas::GlyphAtlas, glyph_bitmap::GlyphBitmap};
 use wgpu::{util::TextureDataOrder, *};
 
-use crate::{MsdfAtlas, MsdfBorder, MsdfDraw, MsdfGlow};
+use crate::{
+    atlas::{GlyphAtlas, GlyphBitmap},
+    MsdfAtlas, MsdfBorder, MsdfDraw, MsdfGlow,
+};
 
 const SHADER_HANDLE: Handle<Shader> =
     Handle::weak_from_u128(167821518087860206701142330598674077861);

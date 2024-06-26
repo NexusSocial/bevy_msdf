@@ -626,7 +626,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f312b1b8aa6d3965b65040b08e33efac030db3071f20b44f9da9c4c3dfcaf76"
 dependencies = [
- "glam 0.25.0",
+ "glam",
  "serde",
 ]
 
@@ -636,7 +636,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3075c01f2b1799945892d5310fc1836e47c045dfe6af5878a304a475931a0c5f"
 dependencies = [
- "glam 0.25.0",
+ "glam",
 ]
 
 [[package]]
@@ -646,8 +646,9 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bytemuck",
- "font-mud",
+ "msdfgen",
  "owned_ttf_parser 0.19.0",
+ "rect_packer",
  "thiserror",
  "wgpu",
 ]
@@ -695,7 +696,7 @@ dependencies = [
  "bevy_utils",
  "downcast-rs",
  "erased-serde",
- "glam 0.25.0",
+ "glam",
  "serde",
  "smol_str",
  "thiserror",
@@ -1361,7 +1362,7 @@ checksum = "95ed933078d2e659745df651f4c180511cd582e5b9414ff896e7d50d207e3103"
 dependencies = [
  "const_panic",
  "encase_derive",
- "glam 0.25.0",
+ "glam",
  "thiserror",
 ]
 
@@ -1511,17 +1512,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "font-mud"
-version = "0.1.0"
-source = "git+https://git.disroot.org/hearth/font-mud?rev=c1e6b66f45#c1e6b66f459e32ee90de2a1c29b8a2124a1a9bad"
-dependencies = [
- "glam 0.20.5",
- "msdfgen",
- "rect_packer",
- "ttf-parser 0.19.2",
-]
-
-[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1615,12 +1605,6 @@ dependencies = [
  "log",
  "xml-rs",
 ]
-
-[[package]]
-name = "glam"
-version = "0.20.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f43e957e744be03f5801a55472f593d43fabdebf25a4585db250f04d86b1675f"
 
 [[package]]
 name = "glam"
@@ -1738,7 +1722,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f33ddb7f7143d9e703c072e88b98cd8b9719f174137a671429351bd2ee43c02a"
 dependencies = [
  "constgebra",
- "glam 0.25.0",
+ "glam",
 ]
 
 [[package]]
@@ -1980,8 +1964,8 @@ dependencies = [
 
 [[package]]
 name = "msdfgen"
-version = "0.2.2"
-source = "git+https://github.com/hearth-rs/msdfgen-rs?branch=fix-mac-builds#ac254fb7a3ffc9a8e4ca9acf7929b5128b8281e6"
+version = "0.2.1"
+source = "git+https://github.com/katyo/msdfgen-rs?rev=5e62bcf#5e62bcfd04a4b3f284f22601440c38fcc4a319f5"
 dependencies = [
  "bytemuck",
  "msdfgen-sys",
@@ -1992,7 +1976,7 @@ dependencies = [
 [[package]]
 name = "msdfgen-sys"
 version = "0.2.1"
-source = "git+https://github.com/hearth-rs/msdfgen-rs?branch=fix-mac-builds#ac254fb7a3ffc9a8e4ca9acf7929b5128b8281e6"
+source = "git+https://github.com/katyo/msdfgen-rs?rev=5e62bcf#5e62bcfd04a4b3f284f22601440c38fcc4a319f5"
 dependencies = [
  "cc",
 ]

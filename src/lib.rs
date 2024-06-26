@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
+use atlas::GlyphAtlas;
 use bevy::{
     asset::{io::Reader, AssetLoader, AsyncReadExt, LoadContext},
     prelude::*,
     utils::{BoxedFuture, HashSet},
 };
-use font_mud::{error::FontError, glyph_atlas::GlyphAtlas};
-use owned_ttf_parser::{AsFaceRef, OwnedFace};
+use owned_ttf_parser::{AsFaceRef, GlyphId, OwnedFace};
 use thiserror::Error;
 
-pub use font_mud;
-
+pub mod atlas;
 pub mod render;
 
 /// Possible errors that can be produced by [MsdfAtlasLoader]
@@ -23,16 +22,17 @@ pub enum MsdfAtlasLoaderError {
     /// A [owned_ttf_parser::FaceParsingError] Error
     #[error(transparent)]
     FontInvalid(#[from] owned_ttf_parser::FaceParsingError),
-    /// A [font_mud::error::FontError] Error
-    // TODO implement Error for FontError upstream
-    #[error("font error: {0}")]
-    FontError(FontError),
-}
-
-impl From<FontError> for MsdfAtlasLoaderError {
-    fn from(err: FontError) -> Self {
-        MsdfAtlasLoaderError::FontError(err)
-    }
+    /// Failure to read a glyph shape.
+    #[error("glyph shape reading error for glyph ID {0:?}")]
+    GlyphShape(GlyphId),
+    /// Failed to auto-frame a glyph within its bounds.
+    #[error("failed to autoframe glyph {glyph:?} in {width}x{height} at range {range:?}")]
+    AutoFraming {
+        glyph: GlyphId,
+        width: usize,
+        height: usize,
+        range: msdfgen::Range<f64>,
+    },
 }
 
 #[derive(Default)]
@@ -79,6 +79,9 @@ pub struct MsdfBundle {
 }
 
 /// Applies a border style to a [MsdfDraw] or [MsdfText].
+///
+/// Because [Self::size] is in unspecified units, you probably don't want to be
+/// using this on text you haven't eyeballed.
 #[derive(Component)]
 pub struct MsdfBorder {
     /// The color of the border.
@@ -89,6 +92,9 @@ pub struct MsdfBorder {
 }
 
 /// Applies a glow/drop shadow effect to a [MsdfDraw] or [MsdfText].
+///
+/// Because [Self::size] is in unspecified units, you probably don't want to be
+/// using this on text you haven't eyeballed.
 #[derive(Component)]
 pub struct MsdfGlow {
     /// The color of the glow.

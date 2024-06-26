@@ -2,11 +2,12 @@
 name = "bevy_msdf"
 version = "0.1.0"
 edition = "2021"
+license = "MIT-0 OR (Apache-2.0 WITH LLVM-exception)"
 
 [dependencies]
 bytemuck = "*"
-font-mud = { git = "https://git.disroot.org/hearth/font-mud", rev = "c1e6b66f45" }
 owned_ttf_parser = "0.19"
+rect_packer = "0.2.1"
 thiserror = "1"
 wgpu = { version = "0.19", default-features = false }
 
@@ -14,6 +15,12 @@ wgpu = { version = "0.19", default-features = false }
 version = "0.13"
 default-features = false
 features = ["bevy_core_pipeline", "bevy_pbr", "bevy_asset", "bevy_render", "multi-threaded"]
+
+[dependencies.msdfgen]
+git = "https://github.com/katyo/msdfgen-rs"
+rev = "5e62bcf"
+default-features = false
+features = ["ttf-parser", "png"]
 
 [dev-dependencies]
 bevy_egui = "0.25"
