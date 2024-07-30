@@ -489,6 +489,7 @@ pub fn extract_msdfs(
             &GlobalTransform,
             Option<&MsdfBorder>,
             Option<&MsdfGlow>,
+            Option<&InheritedVisibility>,
         )>,
     >,
     mut out_msdfs: ResMut<MsdfBuffers>,
@@ -499,7 +500,11 @@ pub fn extract_msdfs(
 
     let mut used_glyphs: HashMap<AssetId<MsdfAtlas>, HashSet<u16>> = HashMap::new();
 
-    for (msdf, transform, border, glow) in in_msdfs.iter() {
+    for (msdf, transform, border, glow, visibility) in in_msdfs.iter() {
+        if visibility.copied() == Some(InheritedVisibility::HIDDEN) {
+            continue;
+        }
+
         let position = transform.transform_point(Vec3::ZERO);
 
         let (border_color, border_size) = border
