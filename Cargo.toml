@@ -9,12 +9,12 @@ bytemuck = "*"
 owned_ttf_parser = "0.19"
 rect_packer = "0.2.1"
 thiserror = "1"
-wgpu = { version = "0.19", default-features = false }
+wgpu = { version = "0.20", default-features = false }
 
 [dependencies.bevy]
-version = "0.13"
+version = "0.14"
 default-features = false
-features = ["bevy_core_pipeline", "bevy_pbr", "bevy_asset", "bevy_render", "multi-threaded"]
+features = ["bevy_core_pipeline", "bevy_pbr", "bevy_asset", "bevy_render", "multi_threaded"]
 
 [dependencies.msdfgen]
 git = "https://github.com/katyo/msdfgen-rs"
@@ -23,9 +23,9 @@ default-features = false
 features = ["ttf-parser", "png"]
 
 [dev-dependencies]
-bevy_egui = "0.25"
+bevy_egui = "0.28"
 
 [dev-dependencies.bevy]
-version = "0.13"
+version = "0.14"
 default-features = false
-features = ["bevy_core_pipeline", "bevy_render", "bevy_pbr", "bevy_winit", "multi-threaded", "x11", "tonemapping_luts", "dynamic_linking"]
+features = ["bevy_core_pipeline", "bevy_render", "bevy_pbr", "bevy_winit", "multi_threaded", "x11", "tonemapping_luts", "dynamic_linking"]

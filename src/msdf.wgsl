@@ -33,7 +33,7 @@ fn vertex(vertex: VertexInput) -> VertexOutput {
     let glyph_base = vertex.glyph * 8;
     let corner = atlas_glyphs[glyph_base + vertex.idx];
     let uv = atlas_glyphs[glyph_base + vertex.idx + 4];
-    let position = view.view_proj * ubo.transform * vec4(corner + vertex.position, 0., 1.);
+    let position = view.clip_from_world * ubo.transform * vec4(corner + vertex.position, 0., 1.);
     return VertexOutput(position, vertex.color, uv);
 }
 

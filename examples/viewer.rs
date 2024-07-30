@@ -47,9 +47,9 @@ fn ui(
 }
 
 pub fn show_color(ui: &mut egui::Ui, color: &mut Color) {
-    let mut rgba = color.as_rgba_u8();
+    let mut rgba = color.to_srgba().to_u8_array();
     ui.color_edit_button_srgba_premultiplied(&mut rgba);
-    *color = Color::rgba_u8(rgba[0], rgba[1], rgba[2], rgba[3]);
+    *color = Color::srgba_u8(rgba[0], rgba[1], rgba[2], rgba[3]);
 }
 
 #[derive(Resource)]

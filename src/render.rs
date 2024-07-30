@@ -10,12 +10,10 @@ use bevy::{
     pbr::{MeshPipeline, MeshPipelineKey, SetMeshViewBindGroup},
     prelude::*,
     render::{
-        render_asset::{
-            PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssetUsages, RenderAssets,
-        },
+        render_asset::{PrepareAssetError, RenderAsset, RenderAssetPlugin, RenderAssets},
         render_phase::{
-            AddRenderCommand, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
-            RenderPhase, SetItemPipeline,
+            AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
+            RenderCommandResult, SetItemPipeline, ViewSortedRenderPhases,
         },
         render_resource::{
             binding_types::{sampler, storage_buffer_read_only_sized, texture_2d, uniform_buffer},
@@ -52,29 +50,25 @@ pub struct GpuMsdfAtlas {
     pub bind_group: BindGroup,
 }
 
-impl RenderAsset for MsdfAtlas {
-    type PreparedAsset = GpuMsdfAtlas;
+impl RenderAsset for GpuMsdfAtlas {
+    type SourceAsset = MsdfAtlas;
     type Param = (SRes<RenderDevice>, SRes<RenderQueue>, SRes<MsdfPipeline>);
 
-    fn asset_usage(&self) -> RenderAssetUsages {
-        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD
-    }
-
     fn prepare_asset(
-        self,
+        src: MsdfAtlas,
         (device, queue, pipeline): &mut <Self::Param as SystemParam>::Item<'_, '_>,
-    ) -> Result<Self::PreparedAsset, PrepareAssetError<Self>> {
+    ) -> Result<Self, PrepareAssetError<MsdfAtlas>> {
         let format = TextureFormat::Rgba8Unorm;
 
-        let texture_data = vec![0; (self.atlas.width * self.atlas.height) as usize * 4];
+        let texture_data = vec![0; (src.atlas.width * src.atlas.height) as usize * 4];
 
         let texture = device.create_texture_with_data(
             queue,
             &TextureDescriptor {
                 label: Some("msdf atlas"),
                 size: Extent3d {
-                    width: self.atlas.width,
-                    height: self.atlas.height,
+                    width: src.atlas.width,
+                    height: src.atlas.height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -97,7 +91,7 @@ impl RenderAsset for MsdfAtlas {
             ..Default::default()
         });
 
-        let glyph_data: Vec<_> = self
+        let glyph_data: Vec<_> = src
             .atlas
             .glyphs
             .iter()
@@ -128,7 +122,7 @@ impl RenderAsset for MsdfAtlas {
         );
 
         Ok(GpuMsdfAtlas {
-            atlas: self.atlas.to_owned(),
+            atlas: src.atlas.to_owned(),
             texture,
             has_glyphs: HashSet::new(),
             bind_group,
@@ -141,11 +135,11 @@ pub struct MsdfRenderPlugin;
 
 impl Plugin for MsdfRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(RenderAssetPlugin::<MsdfAtlas>::default());
+        app.add_plugins(RenderAssetPlugin::<GpuMsdfAtlas>::default());
 
         load_internal_asset!(app, SHADER_HANDLE, "msdf.wgsl", Shader::from_wgsl);
 
-        let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
 
@@ -167,7 +161,7 @@ impl Plugin for MsdfRenderPlugin {
     }
 
     fn finish(&self, app: &mut App) {
-        let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
+        let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
 
@@ -176,7 +170,7 @@ impl Plugin for MsdfRenderPlugin {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, ShaderType)]
 pub struct GpuMsdfGlyph {
     pub position: Vec2,
     pub color: u32,
@@ -195,7 +189,7 @@ pub struct GpuUniform {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Pod, Zeroable, ShaderType)]
 pub struct GpuMsdfGlyphSource {
     pub positions: [Vec2; 4],
     pub tex_coords: [Vec2; 4],
@@ -371,7 +365,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMsdf {
     type Param = (
         SRes<MsdfBuffers>,
         SRes<MsdfBindGroups>,
-        SRes<RenderAssets<MsdfAtlas>>,
+        SRes<RenderAssets<GpuMsdfAtlas>>,
     );
 
     type ViewQuery = ();
@@ -420,11 +414,12 @@ fn queue_msdf_draws(
     msaa: Res<Msaa>,
     pipeline: Res<MsdfPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<MsdfPipeline>>,
+    mut transparent_phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     pipeline_cache: Res<PipelineCache>,
     draws: Query<(Entity, &RenderMsdfDraw)>,
     mut views: Query<(
+        Entity,
         &ExtractedView,
-        &mut RenderPhase<Transparent3d>,
         Option<&RenderLayers>,
         (
             Has<NormalPrepass>,
@@ -437,13 +432,17 @@ fn queue_msdf_draws(
     let draw_function = draw_functions.read().get_id::<MsdfCommands>().unwrap();
 
     for (
+        view_entity,
         view,
-        mut transparent_phase,
         render_layers,
         (normal_prepass, depth_prepass, motion_vector_prepass, deferred_prepass),
     ) in &mut views
     {
-        let _render_layers = render_layers.copied().unwrap_or_default();
+        let Some(transparent_phase) = transparent_phases.get_mut(&view_entity) else {
+            continue;
+        };
+
+        let _render_layers = render_layers.cloned().unwrap_or_default();
 
         let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
             | MeshPipelineKey::from_hdr(view.hdr);
@@ -475,7 +474,7 @@ fn queue_msdf_draws(
                 pipeline,
                 draw_function,
                 batch_range: 0..1,
-                dynamic_offset: None,
+                extra_index: PhaseItemExtraIndex::NONE,
             });
         }
     }
@@ -493,7 +492,7 @@ pub fn extract_msdfs(
         )>,
     >,
     mut out_msdfs: ResMut<MsdfBuffers>,
-    mut atlases: ResMut<RenderAssets<MsdfAtlas>>,
+    mut atlases: ResMut<RenderAssets<GpuMsdfAtlas>>,
 ) {
     out_msdfs.glyphs.clear();
     out_msdfs.uniforms.clear();
@@ -508,15 +507,18 @@ pub fn extract_msdfs(
         let position = transform.transform_point(Vec3::ZERO);
 
         let (border_color, border_size) = border
-            .map(|border| (border.color.as_linear_rgba_f32().into(), border.size))
+            .map(|border| {
+                let linear = border.color.to_linear();
+                let color = Vec4::new(linear.red, linear.green, linear.blue, linear.alpha);
+                (color, border.size)
+            })
             .unwrap_or((Vec4::ZERO, -1.0));
 
         let (glow_color, glow_offset_size) = glow
             .map(|glow| {
-                (
-                    glow.color.as_linear_rgba_f32().into(),
-                    glow.offset.extend(glow.size),
-                )
+                let linear = glow.color.to_linear();
+                let color = Vec4::new(linear.red, linear.green, linear.blue, linear.alpha);
+                (color, glow.offset.extend(glow.size))
             })
             .unwrap_or((Vec4::ZERO, Vec3::NEG_ONE));
 
@@ -531,13 +533,13 @@ pub fn extract_msdfs(
 
         let start = out_msdfs.glyphs.len() as u32;
 
-        out_msdfs
-            .glyphs
-            .extend(msdf.glyphs.iter().map(|glyph| GpuMsdfGlyph {
+        for glyph in msdf.glyphs.iter() {
+            out_msdfs.glyphs.push(GpuMsdfGlyph {
                 position: glyph.pos,
-                color: glyph.color.as_linear_rgba_u32(),
+                color: glyph.color.to_linear().as_u32(),
                 index: glyph.index as u32,
-            }));
+            });
+        }
 
         let end = out_msdfs.glyphs.len() as u32;
 
@@ -594,7 +596,7 @@ pub fn extract_msdfs(
 
 pub fn flush_atlas_writes(
     queue: Res<RenderQueue>,
-    atlases: ResMut<RenderAssets<MsdfAtlas>>,
+    atlases: ResMut<RenderAssets<GpuMsdfAtlas>>,
     mut bufs: ResMut<MsdfBuffers>,
 ) {
     bufs.pending_writes.retain_mut(|write| {
